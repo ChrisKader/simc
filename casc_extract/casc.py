@@ -1,6 +1,9 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 # CASC file formats, based on the work of Caali et al. @ http://www.ownedcore.com/forums/world-of-warcraft/world-of-warcraft-model-editing/471104-analysis-of-casc-filesystem.html
-import os, sys, mmap, hashlib, stat, struct, zlib, glob, re, urllib.request, urllib.error, collections, codecs, io, binascii, socket
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+import os, sys, mmap, hashlib, stat, struct, zlib, glob, re, urllib.request, urllib.error, collections, codecs, io, binascii, socket, time
+import string
 
 import jenkins
 
@@ -413,16 +416,32 @@ class CASCObject(object):
 		self.options = options
 
 	def get_url(self, url, headers = None):
+		defaultDelay = 60
 		try:
 			r = _S.get(url, headers = headers)
-
 			print('Fetching %s ...' % url)
 			if r.status_code not in [200, 206]:
-				self.options.parser.error('HTTP request for %s returns %u' % (url, r.status_code))
+				if r.status_code == 429:
+					timeToWait = timedelta(seconds=defaultDelay)
+					retryTime = r.headers.get("Retry-After")
+					if retryTime != None:
+						if retryTime.find("\\"):
+							retryDateTime = datetime.fromisoformat(retryTime)
+							timeToWait = (retryDateTime - datetime.now(retryDateTime.tzinfo))
+						else:
+							timeToWait = ((datetime.now() + timedelta(seconds=int(retryTime))) - datetime.now())
+					print('Waiting %s seconds to try %s again' % (timeToWait.total_seconds(),url))
+					time.sleep(timeToWait.total_seconds())
+					print('Retrying  %s ...' % url)
+					rt = _S.get(url,headers=headers)
+					if rt.status_code not in [200, 206]:
+						self.options.parser.error('HTTP request for %s returns %u' % (url, r.status_code))
+					else:
+						return rt
+			else:
+				return r
 		except Exception as e:
-			self.options.parser.error('Unable to fetch %s: %s' % (url, r.reason))
-
-		return r
+			self.options.parser.error('Unable to fetch %s: %s' % (url))
 
 	def cache_dir(self, path = None):
 		dir = self.options.cache
