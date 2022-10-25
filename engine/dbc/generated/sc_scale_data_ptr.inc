@@ -1,4 +1,4 @@
-// Hit points per stamina for level 1 - 70, wow build 10.0.0.46270
+// Hit points per stamina for level 1 - 70, wow build 10.0.0.46293
 static constexpr double _ptr__hp_per_sta[70] = {
     7,	7,	7,	7,	7,	//    5
     7,	7,	7,	7,	8,	//   10
@@ -16,7 +16,7 @@ static constexpr double _ptr__hp_per_sta[70] = {
     20,	20,	20,	20,	20,	//   70
 };
 
-// Spell scaling multipliers for levels 1 - 70, wow build 10.0.0.46270
+// Spell scaling multipliers for levels 1 - 70, wow build 10.0.0.46293
 static constexpr double _ptr__spell_scaling[][70] = {
   {
     0,	0,	0,	0,	0,	//    5
@@ -376,7 +376,7 @@ static constexpr double _ptr__spell_scaling[][70] = {
   },
 };
 
-// Base mana points for levels 1 - 70, wow build 10.0.0.46270
+// Base mana points for levels 1 - 70, wow build 10.0.0.46293
 static constexpr double _ptr__base_mp[][70] = {
   {
     0,	0,	0,	0,	0,	//    5
@@ -617,7 +617,7 @@ static constexpr double _ptr__base_mp[][70] = {
   },
 };
 
-// Combat rating values for level 1 - 70, wow build 10.0.0.46270
+// Combat rating values for level 1 - 70, wow build 10.0.0.46293
 static constexpr double _ptr__combat_ratings[][70] = {
   // Dodge
   {
@@ -1029,7 +1029,7 @@ static constexpr double _ptr__combat_ratings[][70] = {
   },
 };
 
-// Combat rating multipliers for item level 1 - 1300, wow build 10.0.0.46270
+// Combat rating multipliers for item level 1 - 1300, wow build 10.0.0.46293
 static constexpr double _ptr__combat_ratings_mult_by_ilvl[][1300] = {
   // Armor Multiplier
   {
@@ -2085,7 +2085,7 @@ static constexpr double _ptr__combat_ratings_mult_by_ilvl[][1300] = {
   },
 };
 
-// Item level translation for item level 1 - 1300, wow build 10.0.0.46270
+// Item level translation for item level 1 - 1300, wow build 10.0.0.46293
 static constexpr double _ptr__item_level_squish[1300] = {
     1,	1,	2,	2,	2,	//    5
     3,	3,	4,	4,	5,	//   10
@@ -2349,7 +2349,7 @@ static constexpr double _ptr__item_level_squish[1300] = {
     951,	952,	953,	954,	955,	// 1300
 };
 
-// Item socket costs for item levels 1 - 1300, wow build 10.0.0.46270
+// Item socket costs for item levels 1 - 1300, wow build 10.0.0.46293
 static constexpr double _ptr__item_socket_cost_per_level[1300] = {
     0,	0,	0,	0,	0,	//    5
     0,	0,	0,	0,	0,	//   10
@@ -2553,7 +2553,7 @@ static constexpr double _ptr__item_socket_cost_per_level[1300] = {
     8,	8,	8,	8,	8,	// 1000
     };
 
-// Stamina multipliers for item level 1 - 1300, wow build 10.0.0.46270
+// Stamina multipliers for item level 1 - 1300, wow build 10.0.0.46293
 static constexpr double _ptr__stamina_mult_by_ilvl[][1300] = {
   // Armor Multiplier
   {
@@ -3609,7 +3609,7 @@ static constexpr double _ptr__stamina_mult_by_ilvl[][1300] = {
   },
 };
 
-// Azerite level to item level 1 - 300, wow build 10.0.0.46270
+// Azerite level to item level 1 - 300, wow build 10.0.0.46293
 static constexpr unsigned _ptr__azerite_level_to_item_level[300] = {
     280,	282,	284,	286,	288,	//    5
     290,	292,	294,	296,	298,	//   10
@@ -3672,4 +3672,42 @@ static constexpr unsigned _ptr__azerite_level_to_item_level[300] = {
     860,	862,	864,	866,	868,	//  295
     870,	872,	874,	876,	878,	//  300
 };
+
+// Armor mitigation constants (K-values), wow build 10.0.0.46293
+static const std::array<double, 73> __ptr_armor_mitigation_constants_data { {
+    88.000,   96.000,  104.000,  112.000,  120.000,
+   128.000,  136.000,  152.000,  168.000,  184.000,
+   200.000,  216.000,  224.000,  232.000,  240.000,
+   255.000,  271.000,  288.000,  305.000,  322.000,
+   333.000,  344.000,  355.000,  367.000,  378.000,
+   389.000,  401.000,  414.000,  426.000,  440.000,
+   454.000,  468.000,  483.000,  499.000,  516.000,
+   533.000,  550.000,  569.000,  588.000,  608.000,
+   629.000,  651.000,  674.000,  695.000,  717.000,
+   746.000,  773.000,  801.000,  830.000,  860.000,
+   968.000, 1009.000, 1054.000, 1103.000, 1155.000,
+  1211.000, 1263.000, 1518.000, 1857.000, 2500.000,
+  2786.000, 3084.000, 3440.000, 3841.000, 4316.000,
+  4877.000, 5540.000, 9633.000, 11559.000, 14094.000,
+  14094.000, 14094.000, 14094.000,
+} };
+
+// Npc base armor values, wow build 10.0.0.46293
+static const std::array<double, 73> __ptr_npc_armor_data { {
+    38.000,   41.000,   45.000,   48.000,   51.000,
+    55.000,   58.000,   65.000,   72.000,   79.000,
+    86.000,   92.000,   96.000,   99.000,  103.000,
+   109.000,  116.000,  123.000,  131.000,  138.000,
+   143.000,  148.000,  152.000,  157.000,  162.000,
+   167.000,  172.000,  177.000,  183.000,  189.000,
+   194.000,  201.000,  207.000,  214.000,  221.000,
+   228.000,  236.000,  244.000,  252.000,  261.000,
+   270.000,  279.000,  289.000,  298.000,  307.000,
+   320.000,  331.000,  343.000,  356.000,  369.000,
+   415.000,  433.000,  452.000,  473.000,  495.000,
+   519.000,  541.000,  651.000,  796.000, 1071.000,
+  1194.000, 1322.000, 1474.000, 1646.000, 1850.000,
+  2090.000, 2374.000, 4128.000, 4954.000, 6040.000,
+  6040.000, 6040.000, 6040.000,
+} };
 
