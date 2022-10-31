@@ -6,6 +6,7 @@
 #include "config.hpp"
 #include "simulationcraft.hpp"
 #include "player/covenant.hpp"
+#include "player/parse_buff_effects.hpp"
 #include "player/pet_spawner.hpp"
 
 namespace
@@ -556,7 +557,7 @@ public:
     buff_t* kindred_affinity;
     buff_t* lone_empowerment;
     buff_t* ravenous_frenzy;
-    buff_t* sinful_hysteria;
+    buff_t* sinful_indulgence;
 
     // Helper pointers
     buff_t* clearcasting;  // clearcasting_cat or clearcasting_tree
@@ -1065,7 +1066,7 @@ public:
     item_runeforge_t kindred_affinity;   // 7477
     item_runeforge_t unbridled_swarm;    // 7472
     item_runeforge_t celestial_spirits;  // 7571
-    item_runeforge_t sinful_hysteria;    // 7474
+    item_runeforge_t sinful_indulgence;    // 7474
 
     // Balance
     item_runeforge_t oneths_clear_vision;        // 7087
@@ -2125,36 +2126,9 @@ struct kindred_affinity_external_buff_t : public kindred_affinity_base_t
 };
 }  // end namespace buffs
 
-using bfun = std::function<bool()>;
-struct buff_effect_t
-{
-  buff_t* buff;
-  double value;
-  bool use_stacks;
-  bool mastery;
-  bfun func;
-
-  buff_effect_t( buff_t* b, double v, bool s = true, bool m = false, bfun f = nullptr )
-    : buff( b ), value( v ), use_stacks( s ), mastery( m ), func( std::move( f ) )
-  {}
-};
-
-using dfun = std::function<dot_t*( druid_td_t* )>;
-struct dot_debuff_t
-{
-  dfun func;
-  double value;
-  bool use_stacks;
-  bool mastery;
-
-  dot_debuff_t( dfun f, double v, bool s, bool m = false )
-    : func( std::move( f ) ), value( v ), use_stacks( s ), mastery( m )
-  {}
-};
-
 // Template for common druid action code. See priest_action_t.
 template <class Base>
-struct druid_action_t : public Base
+struct druid_action_t : public Base, public parse_buff_effects_t<druid_td_t>
 {
 private:
   using ab = Base;  // action base, eg. spell_t
@@ -2162,15 +2136,6 @@ private:
 public:
   using base_t = druid_action_t<Base>;
 
-  // auto parsed dynamic effects
-  std::vector<buff_effect_t> ta_multiplier_buffeffects;
-  std::vector<buff_effect_t> da_multiplier_buffeffects;
-  std::vector<buff_effect_t> execute_time_buffeffects;
-  std::vector<buff_effect_t> recharge_multiplier_buffeffects;
-  std::vector<buff_effect_t> cost_buffeffects;
-  std::vector<buff_effect_t> flat_cost_buffeffects;
-  std::vector<buff_effect_t> crit_chance_buffeffects;
-  std::vector<dot_debuff_t> target_multiplier_dotdebuffs;
   // list of action_ids that triggers the same dot as this action
   std::vector<int> dot_ids;
   // Name to be used by get_dot() instead of action name
@@ -2198,11 +2163,13 @@ public:
       is_auto_attack( false ),
       break_stealth( !ab::data().flags( spell_attribute::SX_NO_STEALTH_BREAK ) )
   {
+    action_ = this;
+
     // WARNING: auto attacks will NOT get processed here since they have no spell data
     if ( ab::data().ok() )
     {
       apply_buff_effects();
-      apply_dot_debuffs();
+      apply_debuffs_effects();
     }
   }
 
@@ -2381,7 +2348,7 @@ public:
       return;
 
     // trigger on non-free_cast or free_cast that requires you to actually cast (or UFR)
-    if ( !f || is_free_cast() || f == free_spell_e::FLASHING )
+    if ( !f || is_free_cast() || f == free_spell_e::FLASHING || f == free_spell_e::CONVOKE )
       p()->buff.ravenous_frenzy->trigger();
   }
 
@@ -2415,272 +2382,13 @@ public:
     make_event( ab::sim, [ this ]() { p()->buff.galactic_guardian->trigger(); } );  // schedule buff after damage execute
   }
 
-  double mod_spell_effects_value( const spell_data_t*, const spelleffect_data_t& e ) { return e.base_value(); }
-
-  double mod_spell_effects_value( const conduit_data_t& c, const spelleffect_data_t& ) { return c.value(); }
-
-  template <typename T>
-  void parse_spell_effects_mods( double& val, bool& mastery, const spell_data_t* base, size_t idx, T mod )
-  {
-    for ( size_t i = 1; i <= mod->effect_count(); i++ )
-    {
-      const auto& eff = mod->effectN( i );
-
-      if ( eff.type() != E_APPLY_AURA )
-        continue;
-
-      if ( ( base->affected_by_all( eff ) &&
-             ( ( eff.misc_value1() == P_EFFECT_1 && idx == 1 ) || ( eff.misc_value1() == P_EFFECT_2 && idx == 2 ) ||
-               ( eff.misc_value1() == P_EFFECT_3 && idx == 3 ) || ( eff.misc_value1() == P_EFFECT_4 && idx == 4 ) ||
-               ( eff.misc_value1() == P_EFFECT_5 && idx == 5 ) ) ) ||
-           ( eff.subtype() == A_PROC_TRIGGER_SPELL_WITH_VALUE && eff.trigger_spell_id() == base->id() && idx == 1 ) )
-      {
-        double pct = mod_spell_effects_value( mod, eff );
-
-        if ( eff.subtype() == A_ADD_FLAT_MODIFIER || eff.subtype() == A_ADD_FLAT_LABEL_MODIFIER )
-          val += pct;
-        else if ( eff.subtype() == A_ADD_PCT_MODIFIER || eff.subtype() == A_ADD_PCT_LABEL_MODIFIER )
-          val *= 1.0 + pct / 100;
-        else if ( eff.subtype() == A_PROC_TRIGGER_SPELL_WITH_VALUE )
-          val = pct;
-        else
-          continue;
-
-        if ( p()->find_mastery_spell( p()->specialization() ) == mod )
-          mastery = true;
-      }
-    }
-  }
-
-  void parse_spell_effects_mods( double&, bool&, const spell_data_t*, size_t ) {}
-
-  template <typename T, typename... Ts>
-  void parse_spell_effects_mods( double& val, bool& m, const spell_data_t* base, size_t idx, T mod, Ts... mods )
-  {
-    parse_spell_effects_mods( val, m, base, idx, mod );
-    parse_spell_effects_mods( val, m, base, idx, mods... );
-  }
-
-  // Will parse simple buffs that ONLY target the caster and DO NOT have multiple ranks
-  // 1: Add Percent Modifier to Spell Direct Amount
-  // 2: Add Percent Modifier to Spell Periodic Amount
-  // 3: Add Percent Modifier to Spell Cast Time
-  // 4: Add Percent Modifier to Spell Cooldown
-  // 5: Add Percent Modifier to Spell Resource Cost
-  // 6: Add Flat Modifier to Spell Critical Chance
-  template <typename... Ts>
-  void parse_buff_effect( buff_t* buff, bfun f, const spell_data_t* s_data, size_t i, bool use_stacks, bool use_default,
-                          Ts... mods )
-  {
-    const auto& eff = s_data->effectN( i );
-    double val      = eff.base_value();
-    double val_mul  = 0.01;
-    bool mastery    = p()->find_mastery_spell( p()->specialization() ) == s_data;
-
-    // TODO: more robust logic around 'party' buffs with radius
-    if ( !( eff.type() == E_APPLY_AURA || eff.type() == E_APPLY_AREA_AURA_PARTY ) || eff.radius() ) return;
-
-    if ( i <= 5 )
-      parse_spell_effects_mods( val, mastery, s_data, i, mods... );
-
-    auto debug_message = [ & ]( std::string_view type ) {
-      if ( buff )
-      {
-        p()->sim->print_debug( "buff-effects: {} ({}) {} modified by {}{} with buff {} ({}#{})", ab::name(), ab::id,
-                               type, val * val_mul, mastery ? "+mastery" : "", buff->name(), buff->data().id(), i );
-      }
-      else if ( mastery && !f )
-      {
-        p()->sim->print_debug( "mastery-effects: {} ({}) {} modified by {}+mastery from {} ({}#{})", ab::name(), ab::id,
-                               type, val * val_mul, s_data->name_cstr(), s_data->id(), i );
-      }
-      else if ( f )
-      {
-        p()->sim->print_debug( "conditional-effects: {} ({}) {} modified by {} with condition from {} ({}#{})",
-                               ab::name(), ab::id, type, val * val_mul, s_data->name_cstr(), s_data->id(), i );
-      }
-      else
-      {
-        p()->sim->print_debug( "passive-effects: {} ({}) {} modified by {} from {} ({}#{})", ab::name(), ab::id, type,
-                               val * val_mul, s_data->name_cstr(), s_data->id(), i );
-      }
-    };
-
-    if ( is_auto_attack && eff.subtype() == A_MOD_AUTO_ATTACK_PCT )
-    {
-      da_multiplier_buffeffects.emplace_back( buff, val * val_mul );
-      debug_message( "auto attack" );
-      return;
-    }
-
-    if ( !ab::data().affected_by_all( eff ) )
-      return;
-
-    if ( use_default && buff)
-    {
-      val = buff->default_value;
-      val_mul = 1.0;
-    }
-
-    if ( !mastery && !val )
-      return;
-
-    if ( eff.subtype() == A_ADD_PCT_MODIFIER || eff.subtype() == A_ADD_PCT_LABEL_MODIFIER )
-    {
-      switch ( eff.misc_value1() )
-      {
-        case P_GENERIC:
-          da_multiplier_buffeffects.emplace_back( buff, val * val_mul, use_stacks, mastery, f );
-          debug_message( "direct damage" );
-          break;
-        case P_TICK_DAMAGE:
-          ta_multiplier_buffeffects.emplace_back( buff, val * val_mul, use_stacks, mastery, f );
-          debug_message( "tick damage" );
-          break;
-        case P_CAST_TIME:
-          execute_time_buffeffects.emplace_back( buff, val * val_mul, use_stacks, false, f );
-          debug_message( "cast time" );
-          break;
-        case P_COOLDOWN:
-          recharge_multiplier_buffeffects.emplace_back( buff, val * val_mul, use_stacks, false, f );
-          debug_message( "cooldown" );
-          break;
-        case P_RESOURCE_COST:
-          cost_buffeffects.emplace_back( buff, val * val_mul, use_stacks, false, f );
-          debug_message( "cost percent" );
-          break;
-        default:
-          return;
-      }
-    }
-    else if ( eff.subtype() == A_ADD_FLAT_MODIFIER || eff.subtype() == A_ADD_FLAT_LABEL_MODIFIER )
-    {
-      switch ( eff.misc_value1() )
-      {
-        case P_CRIT:
-          crit_chance_buffeffects.emplace_back( buff, val * val_mul, use_stacks, false, f );
-          debug_message( "crit chance" );
-          break;
-        case P_RESOURCE_COST:
-          val_mul = eff.resource_multiplier( ab::current_resource() );
-          flat_cost_buffeffects.emplace_back( buff, val * val_mul, use_stacks, false, f );
-          debug_message( "flat cost" );
-          break;
-        default:
-          return;
-      }
-    }
-  }
-
-  template <typename... Ts>
-  void parse_buff_effects( buff_t* buff, unsigned ignore_mask, bool use_stacks, bool use_default, Ts... mods )
-  {
-    if ( !buff )
-      return;
-
-    const spell_data_t* s_data = &buff->data();
-
-    for ( size_t i = 1; i <= s_data->effect_count(); i++ )
-    {
-      if ( ignore_mask & 1 << ( i - 1 ) )
-        continue;
-
-      parse_buff_effect( buff, nullptr, s_data, i, use_stacks, use_default, mods... );
-    }
-  }
-
-  template <typename... Ts>
-  void parse_buff_effects( buff_t* buff, unsigned ignore_mask, Ts... mods )
-  {
-    parse_buff_effects<Ts...>( buff, ignore_mask, true, false, mods... );
-  }
-
-  template <typename... Ts>
-  void parse_buff_effects( buff_t* buff, bool stack, bool use_default, Ts... mods )
-  {
-    parse_buff_effects<Ts...>( buff, 0U, stack, use_default, mods... );
-  }
-
-  template <typename... Ts>
-  void parse_buff_effects( buff_t* buff, bool stack, Ts... mods )
-  {
-    parse_buff_effects<Ts...>( buff, 0U, stack, false, mods... );
-  }
-
-  template <typename... Ts>
-  void parse_buff_effects( buff_t* buff, Ts... mods )
-  {
-    parse_buff_effects<Ts...>( buff, 0U, true, false, mods... );
-  }
-
-  void parse_conditional_effects( const spell_data_t* spell, bfun f, unsigned ignore_mask = 0U )
-  {
-    if ( !spell || !spell->ok() )
-      return;
-
-    for ( size_t i = 1 ; i <= spell->effect_count(); i++ )
-    {
-      if ( ignore_mask & 1 << ( i - 1 ) )
-        continue;
-
-      parse_buff_effect( nullptr, f, spell, i, false, false );
-    }
-  }
-
-  void parse_passive_effects( const spell_data_t* spell, unsigned ignore_mask = 0U )
-  {
-    parse_conditional_effects( spell, nullptr, ignore_mask );
-  }
-
-  double get_buff_effects_value( const std::vector<buff_effect_t>& buffeffects, bool flat = false,
-                                 bool benefit = true ) const
-  {
-    double return_value = flat ? 0.0 : 1.0;
-
-    for ( const auto& i : buffeffects )
-    {
-      double eff_val = i.value;
-      int mod = 1;
-
-      if ( i.func && !i.func() )
-          continue;  // continue to next effect if conditional effect function is false
-
-      if ( i.buff )
-      {
-        auto stack = benefit ? i.buff->stack() : i.buff->check();
-
-        if ( !stack )
-          continue;  // continue to next effect if stacks == 0 (buff is down)
-
-        mod = i.use_stacks ? stack : 1;
-      }
-
-      if ( i.mastery )
-        eff_val += p()->cache.mastery_value();
-
-      if ( flat )
-        return_value += eff_val * mod;
-      else
-        return_value *= 1.0 + eff_val * mod;
-    }
-
-    return return_value;
-  }
-
-  // Syntax: parse_buff_effects[<S|C[,...]>]( buff[, ignore_mask|use_stacks[, use_default]][, spell|conduit][,...] )
-  //  buff = buff to be checked for to see if effect applies
-  //  ignore_mask = optional bitmask to skip effect# n corresponding to the n'th bit
-  //  use_stacks = optional, default true, whether to multiply value by stacks, mutually exclusive with ignore parameters
-  //  use_default = optional, default false, whether to use buff's default value over effect's value
-  //  S/C = optional list of template parameter to indicate spell or conduit with redirect effects
-  //  spell/conduit = optional list of spell or conduit with redirect effects that modify the effects on the buff
   void apply_buff_effects()
   {
     using S = const spell_data_t*;
     using C = const conduit_data_t&;
 
     parse_buff_effects( p()->buff.ravenous_frenzy );
-    parse_buff_effects( p()->buff.sinful_hysteria );
+    parse_buff_effects( p()->buff.sinful_indulgence );
     parse_buff_effects<C>( p()->buff.convoke_the_spirits, p()->conduit.conflux_of_elements );
     parse_buff_effects( p()->buff.lone_empowerment );
 
@@ -2713,6 +2421,9 @@ public:
     parse_buff_effects( p()->buff.touch_the_cosmos );
     // TODO: fix/remove when final bugfix of umbral embrace is pushed
     // parse_buff_effects<S>( p()->buff.umbral_embrace, p()->talent.umbral_embrace );
+    parse_conditional_effects( &p()->buff.umbral_embrace->data(), [ this ]() {
+      return p()->buff.umbral_embrace->check() && p()->eclipse_handler.state != ANY_NEXT;
+    }, 0U, false, true );
     parse_buff_effects( p()->buff.warrior_of_elune, false );
 
     // Feral
@@ -2737,8 +2448,8 @@ public:
     parse_buff_effects( p()->buff.overpowering_aura );
     parse_passive_effects( p()->talent.reinvigoration, p()->talent.innate_resolve.ok() ? 0b01U : 0b10U );
     parse_buff_effects( p()->buff.tooth_and_claw, false );
-    parse_buff_effects( p()->buff.vicious_cycle_mangle, false, true );
-    parse_buff_effects( p()->buff.vicious_cycle_maul, false, true );
+    parse_buff_effects( p()->buff.vicious_cycle_mangle, true, true );
+    parse_buff_effects( p()->buff.vicious_cycle_maul, true, true );
     parse_buff_effects<C>( p()->buff.savage_combatant, p()->conduit.savage_combatant );
 
     // Restoration
@@ -2748,78 +2459,39 @@ public:
     parse_buff_effects<S>( p()->buff.natures_swiftness, p()->talent.natures_splendor );
   }
 
-  template <typename... Ts>
-  void parse_dot_debuffs( const dfun& func, bool use_stacks, const spell_data_t* s_data, Ts... mods )
+  void apply_debuffs_effects()
   {
-    if ( !s_data->ok() )
-      return;
+    parse_debuff_effects( []( druid_td_t* t ) { return t->dots.moonfire->is_ticking(); },
+                          p()->spec.moonfire_dmg, p()->mastery.astral_invocation );
 
-    for ( size_t i = 1; i <= s_data->effect_count(); i++ )
-    {
-      const auto& eff = s_data->effectN( i );
-      double val      = eff.base_value();
-      double val_mul  = 0.01;
-      bool mastery    = false;
+    parse_debuff_effects( []( druid_td_t* t ) { return t->dots.sunfire->is_ticking(); },
+                          p()->spec.sunfire_dmg, p()->mastery.astral_invocation );
 
-      if ( eff.type() != E_APPLY_AURA )
-        continue;
+    parse_debuff_effects( []( druid_td_t* t ) { return t->dots.adaptive_swarm_damage->is_ticking(); },
+                          p()->spec.adaptive_swarm_damage );
 
-      if ( i <= 5 )
-        parse_spell_effects_mods( val, mastery, s_data, i, mods... );
-
-      if ( !mastery && !val )
-        continue;
-
-      if ( !( eff.subtype() == A_MOD_DAMAGE_FROM_CASTER_SPELLS && ab::data().affected_by_all( eff ) ) &&
-           !( eff.subtype() == A_MOD_AUTO_ATTACK_FROM_CASTER && is_auto_attack ) )
-        continue;
-
-      p()->sim->print_debug( "dot-debuffs: {} ({}) damage modified by {}{} on targets with dot {} ({}#{})", ab::name(),
-                             ab::id, val * val_mul, mastery ? "+mastery" : "", s_data->name_cstr(), s_data->id(), i );
-      target_multiplier_dotdebuffs.emplace_back( func, val * val_mul, use_stacks, mastery );
-    }
+    parse_debuff_effects( []( druid_td_t* t ) { return t->dots.thrash_bear->current_stack(); },
+                          p()->spec.thrash_bear_dot, p()->talent.rend_and_tear );
   }
 
-  template <typename... Ts>
-  void parse_dot_debuffs( dfun func, const spell_data_t* s_data, Ts... mods )
-  {
-    parse_dot_debuffs( func, true, s_data, mods... );
-  }
-
-  double get_dot_debuffs_value( druid_td_t* t ) const
+  double get_debuff_effects_value( druid_td_t* t ) const override
   {
     double return_value = 1.0;
 
     for ( const auto& i : target_multiplier_dotdebuffs )
     {
-      auto dot = i.func( t );
-      auto eff_val = i.value;
+      if ( auto check = i.func( t ) )
+      {
+        auto eff_val = i.value;
 
-      if ( i.mastery )
-        eff_val += p()->cache_mastery_value();
+        if ( i.mastery )
+          eff_val += p()->cache_mastery_value();
 
-      if ( dot->is_ticking() )
-        return_value *= 1.0 + eff_val * ( i.use_stacks ? dot->current_stack() : 1.0 );
+        return_value *= 1.0 + eff_val * check;
+      }
     }
 
     return return_value;
-  }
-
-  // Syntax: parse_dot_debuffs[<S[,...]>]( func, spell_data_t* dot[, spell_data_t* spell][,...] )
-  //  func = function returning the dot_t* of the dot
-  //  dot = spell data of the dot
-  //  S = optional list of template parameter to indicate spell with redirect effects
-  //  spell = optional list of spell with redirect effects that modify the effects on the dot
-  void apply_dot_debuffs()
-  {
-    parse_dot_debuffs( []( druid_td_t* t ) -> dot_t* { return t->dots.moonfire; },
-                       p()->spec.moonfire_dmg, p()->mastery.astral_invocation );
-    parse_dot_debuffs( []( druid_td_t* t ) -> dot_t* { return t->dots.sunfire; },
-                       p()->spec.sunfire_dmg, p()->mastery.astral_invocation );
-    parse_dot_debuffs( []( druid_td_t* t ) -> dot_t* { return t->dots.adaptive_swarm_damage; },
-                       false, p()->spec.adaptive_swarm_damage );
-    parse_dot_debuffs( []( druid_td_t* t ) -> dot_t* { return t->dots.thrash_bear; },
-                       p()->spec.thrash_bear_dot, p()->talent.rend_and_tear );
   }
 
   double cost() const override
@@ -2834,13 +2506,6 @@ public:
       return 0.0;
 
     return c;
-  }
-
-  double composite_target_multiplier( player_t* t ) const override
-  {
-    double tm = ab::composite_target_multiplier( t ) * get_dot_debuffs_value( td( t ) );
-
-    return tm;
   }
 
   double composite_ta_multiplier( const action_state_t* s ) const override
@@ -2871,11 +2536,25 @@ public:
     return std::max( 0_ms, et );
   }
 
+  timespan_t composite_dot_duration( const action_state_t* s ) const override
+  {
+    timespan_t dd = ab::composite_dot_duration( s ) * get_buff_effects_value( dot_duration_buffeffects );
+
+    return dd;
+  }
+
   double recharge_multiplier( const cooldown_t& cd ) const override
   {
     double rm = ab::recharge_multiplier( cd ) * get_buff_effects_value( recharge_multiplier_buffeffects );
 
     return rm;
+  }
+
+  double composite_target_multiplier( player_t* t ) const override
+  {
+    double tm = ab::composite_target_multiplier( t ) * get_debuff_effects_value( td( t ) );
+
+    return tm;
   }
 
   // Override this function for temporary effects that change the normal form restrictions of the spell. eg: Predatory
@@ -3496,7 +3175,7 @@ public:
     size_t da_old   = da_multiplier_buffeffects.size();
     size_t cost_old = cost_buffeffects.size();
 
-    parse_buff_effects( buff, ignore_mask, use_stacks, false, mods... );
+    parse_buff_effects( buff, ignore_mask, use_stacks, false, 0U, mods... );
 
     // If there is a new entry in the ta_mul table, move it to the pers_mul table.
     if ( ta_multiplier_buffeffects.size() > ta_old )
@@ -4409,6 +4088,9 @@ struct rake_t : public cat_attack_t
       
       if ( !stealthed() )
       	p()->buff.sudden_ambush->expire();
+
+      if ( num_targets_hit > 1 )
+        trigger_ravenous_frenzy( free_spell );
     }
   }
 
@@ -4474,12 +4156,6 @@ struct rip_t : public cat_finisher_t<>
     timespan_t t = cat_finisher_t::composite_dot_duration( s );
 
     return t *= cast_state( s )->combo_points + 1;
-  }
-
-  // Newly applied rip will not lower existing duration
-  timespan_t calculate_dot_refresh_duration( const dot_t* d, timespan_t dur ) const override
-  {
-    return std::max( cat_finisher_t::calculate_dot_refresh_duration( d, dur ), d->remains() );
   }
 
   void impact( action_state_t* s ) override
@@ -7979,11 +7655,13 @@ struct starfire_t : public druid_spell_t
     else if ( p()->buff.warrior_of_elune->up() )
       p()->buff.warrior_of_elune->decrement();
 
-    p()->buff.umbral_embrace->expire();
     p()->buff.gathering_starstuff->expire();
 
     if ( is_free_proc() )
       return;
+
+    if ( p()->eclipse_handler.state != ANY_NEXT )
+      p()->buff.umbral_embrace->expire();
 
     p()->eclipse_handler.cast_starfire();
   }
@@ -8628,11 +8306,13 @@ struct wrath_t : public druid_spell_t
   {
     druid_spell_t::execute();
 
-    p()->buff.umbral_embrace->expire();
     p()->buff.gathering_starstuff->expire();
 
     if ( is_free_proc() )
       return;
+
+    if ( p()->eclipse_handler.state != ANY_NEXT )
+      p()->buff.umbral_embrace->expire();
 
     // in druid_t::init_finished(), we set the final wrath of the precombat to have energize type of NONE, so that
     // we can handle the delayed enerigze & eclipse stack triggering here.
@@ -9122,7 +8802,12 @@ struct convoke_the_spirits_t : public druid_spell_t
 
     conv_cast = convoke_action_from_type( type );
     if ( !conv_cast )
+    {
+      // Heals still proc a stack of Frenzy
+      if ( p()->buff.ravenous_frenzy->check() )
+        p()->buff.ravenous_frenzy->trigger();
       return;
+    }
 
     conv_cast->execute_on_target( conv_tar );
   }
@@ -9243,7 +8928,7 @@ struct druid_melee_t : public Base
     ab::weapon_multiplier = 1.0;
 
     ab::apply_buff_effects();
-    ab::apply_dot_debuffs();
+    ab::apply_debuffs_effects();
 
     // Auto attack mods
     ab::parse_passive_effects( p->spec.guardian );
@@ -9935,6 +9620,7 @@ void druid_t::init_spells()
   talent.natures_grace                  = ST( "Nature's Grace" );
   talent.new_moon                       = ST( "New Moon" );
   talent.orbit_breaker                  = ST( "Orbit Breaker" );
+  talent.orbital_strike                 = ST( maybe_ptr( dbc->ptr ) ? "Orbital Strike" : "Syzygy" );
   talent.power_of_goldrinn              = ST( "Power of Goldrinn" );
   talent.primordial_arcanic_pulsar      = ST( "Primordial Arcanic Pulsar" );
   talent.radiant_moonlight              = ST( "Radiant Moonlight" );
@@ -9949,7 +9635,6 @@ void druid_t::init_spells()
   talent.stellar_flare                  = ST( "Stellar Flare" );
   talent.stellar_innervation            = ST( "Stellar Innervation" );
   talent.sundered_firmament             = ST( "Sundered Firmament" );
-  talent.orbital_strike                 = ST( "Orbital Strike" );
   talent.twin_moons                     = ST( "Twin Moons" );
   talent.umbral_embrace                 = ST( "Umbral Embrace" );
   talent.umbral_intensity               = ST( "Umbral Intensity" );
@@ -9976,7 +9661,7 @@ void druid_t::init_spells()
   talent.infected_wounds_cat            = STS( "Infected Wounds", DRUID_FERAL );
   talent.lions_strength                 = ST( "Lion's Strength" );
   talent.lunar_inspiration              = ST( "Lunar Inspiration" );
-  talent.merciless_claws                = ST( "Merciless Claws" );
+  talent.merciless_claws                = ST( maybe_ptr( dbc->ptr ) ? "Merciless Claws" : "Merciless Strikes" );
   talent.moment_of_clarity              = ST( "Moment of Clarity" );
   talent.omen_of_clarity_cat            = STS( "Omen of Clarity", DRUID_FERAL );
   talent.pouncing_strikes               = ST( "Pouncing Strikes" );
@@ -10149,7 +9834,7 @@ void druid_t::init_spells()
   legendary.kindred_affinity          = find_runeforge_legendary( "Kindred Affinity" );
   legendary.unbridled_swarm           = find_runeforge_legendary( "Locust Swarm" );
   legendary.celestial_spirits         = find_runeforge_legendary( "Celestial Spirits" );
-  legendary.sinful_hysteria           = find_runeforge_legendary( "Sinful Hysteria" );
+  legendary.sinful_indulgence           = find_runeforge_legendary( "Sinful Indulgence" );
 
   // Balance
   legendary.oneths_clear_vision       = find_runeforge_legendary( "Oneth's Clear Vision" );
@@ -10849,21 +10534,21 @@ void druid_t::create_buffs()
   if ( conduit.endless_thirst->ok() )
     buff.ravenous_frenzy->add_invalidate( CACHE_CRIT_CHANCE );
 
-  buff.sinful_hysteria = make_buff( this, "ravenous_frenzy_sinful_hysteria", find_spell( 355315 ) )
+  buff.sinful_indulgence = make_buff( this, "ravenous_frenzy_sinful_indulgence", find_spell( 355315 ) )
     ->set_default_value_from_effect_type( A_HASTE_ALL )
     ->set_pct_buff_type( STAT_PCT_BUFF_HASTE );
   if ( conduit.endless_thirst->ok() )
-    buff.sinful_hysteria->add_invalidate( CACHE_CRIT_CHANCE );
-  if ( legendary.sinful_hysteria->ok() )
+    buff.sinful_indulgence->add_invalidate( CACHE_CRIT_CHANCE );
+  if ( legendary.sinful_indulgence->ok() )
   {
-    buff.sinful_hysteria->s_data_reporting = legendary.sinful_hysteria;
-    buff.sinful_hysteria->name_str_reporting = "sinful_hysteria";
+    buff.sinful_indulgence->s_data_reporting = legendary.sinful_indulgence;
+    buff.sinful_indulgence->name_str_reporting = "sinful_indulgence";
     buff.ravenous_frenzy->set_stack_change_callback( [ this ]( buff_t* b, int old_, int new_ ) {
       // spell data hasn't changed and still indicates 0.2s, but tooltip says 0.1s
       if ( old_ && new_ )
         b->extend_duration( this, 100_ms );
       else if ( old_ )
-        buff.sinful_hysteria->trigger( old_ );
+        buff.sinful_indulgence->trigger( old_ );
     } );
   }
 
@@ -11293,24 +10978,24 @@ void druid_t::init()
   }
 }
 
-bool druid_t::validate_fight_style( fight_style_e /* style */) const
+bool druid_t::validate_fight_style( fight_style_e /* style */ ) const
 {
-  if ( SC_BETA == 0 && strcmp( SC_MAJOR_VERSION, "1000" ) == 0 )
+  if ( SC_BETA == 0 && strcmp( SC_MAJOR_VERSION, "1000" ) == 0 && level() == 60 )
   {
-    sim->error( "Prepatch {} sims are untested and not supported. Sim at your own risk!",
-                util::specialization_string( specialization() ) );
+    sim->error( "Prepatch {} sims are untested and not supported. Many legendaries and conduits may not work. Sim at your own risk!",
+      util::specialization_string( specialization() ) );
   }
-/* uncomment if certain fight styles prove problematic again
-  switch ( specialization() )
-  {
-    case DRUID_BALANCE:
-    case DRUID_FERAL:
-    case DRUID_GUARDIAN:
-    case DRUID_RESTORATION:
-    default:
-      break;
-  }
-*/
+  /* uncomment if certain fight styles prove problematic again
+    switch ( specialization() )
+    {
+      case DRUID_BALANCE:
+      case DRUID_FERAL:
+      case DRUID_GUARDIAN:
+      case DRUID_RESTORATION:
+      default:
+        break;
+    }
+  */
   return true;
 }
 
@@ -11868,7 +11553,7 @@ double druid_t::composite_melee_crit_chance() const
   crit += spec.critical_strikes->effectN( 1 ).percent();
 
   crit += buff.ravenous_frenzy->check() * conduit.endless_thirst.percent() / 10.0;
-  crit += buff.sinful_hysteria->check() * conduit.endless_thirst.percent() / 10.0;
+  crit += buff.sinful_indulgence->check() * conduit.endless_thirst.percent() / 10.0;
 
   return crit;
 }
@@ -11880,7 +11565,7 @@ double druid_t::composite_spell_crit_chance() const
   crit += spec.critical_strikes->effectN( 1 ).percent();
 
   crit += buff.ravenous_frenzy->check() * conduit.endless_thirst.percent() / 10.0;
-  crit += buff.sinful_hysteria->check() * conduit.endless_thirst.percent() / 10.0;
+  crit += buff.sinful_indulgence->check() * conduit.endless_thirst.percent() / 10.0;
 
   return crit;
 }

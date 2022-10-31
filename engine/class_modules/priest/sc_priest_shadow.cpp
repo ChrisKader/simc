@@ -47,13 +47,6 @@ struct mind_sear_tick_t final : public priest_spell_t
   {
     priest_spell_t::impact( s );
 
-    // BUG: https://github.com/SimCMinMax/WoW-BugTracker/issues/998
-    if ( priest().bugs )
-    {
-      priest_td_t& td = get_td( s->target );
-      td.buffs.screams_of_the_void->trigger();
-    }
-
     // Benefit Tracking
     if ( priest().sets->has_set_bonus( PRIEST_SHADOW, T29, B2 ) )
     {
@@ -109,7 +102,7 @@ struct mind_sear_t final : public priest_spell_t
 
   bool ready() override
   {
-    if ( priest().buffs.mind_devourer->may_react() )
+    if ( priest().buffs.mind_devourer->may_react() && priest().talents.shadow.mind_devourer.enabled() )
     {
       return true;
     }
@@ -221,7 +214,8 @@ struct mind_flay_base_t final : public priest_spell_t
 
   void trigger_mind_flay_dissonant_echoes()
   {
-    if ( !priest().conduits.dissonant_echoes->ok() || priest().buffs.voidform->check() )
+    if ( !priest().conduits.dissonant_echoes->ok() || !priest().talents.shadow.void_eruption.enabled() ||
+         priest().buffs.voidform->check() )
     {
       return;
     }
@@ -236,13 +230,6 @@ struct mind_flay_base_t final : public priest_spell_t
   void tick( dot_t* d ) override
   {
     priest_spell_t::tick( d );
-
-    // BUG: https://github.com/SimCMinMax/WoW-BugTracker/issues/998
-    if ( priest().bugs )
-    {
-      priest_td_t& td = get_td( d->target );
-      td.buffs.screams_of_the_void->trigger();
-    }
 
     priest().trigger_eternal_call_to_the_void( d->state );
     priest().trigger_idol_of_cthun( d->state );
@@ -606,12 +593,6 @@ struct shadow_word_pain_t final : public priest_spell_t
       spell_power_mod.direct = 0;
     }
 
-    auto rank2 = p.find_rank_spell( "Shadow Word: Pain", "Rank 2" );
-    if ( rank2->ok() )
-    {
-      dot_duration += rank2->effectN( 1 ).time_value();
-    }
-
     if ( priest().talents.shadow.misery.enabled() )
     {
       dot_duration += priest().talents.shadow.misery->effectN( 2 ).time_value();
@@ -693,7 +674,10 @@ struct shadow_word_pain_t final : public priest_spell_t
   {
     timespan_t t = priest_spell_t::tick_time( state );
 
-    if ( priest().is_screams_of_the_void_up( state->target ) )
+    // BUG: Screams of the Void does not work with Shadow Word: Pain with Mental Decay talented
+    // https://github.com/SimCMinMax/WoW-BugTracker/issues/1038
+    if ( ( !priest().bugs || !priest().talents.shadow.mental_decay.enabled() ) &&
+         priest().is_screams_of_the_void_up( state->target ) )
     {
       t /= ( 1 + priest().talents.shadow.screams_of_the_void->effectN( 1 ).percent() );
     }
@@ -1385,11 +1369,8 @@ struct void_bolt_t final : public priest_spell_t
 // ==========================================================================
 struct dark_ascension_t final : public priest_spell_t
 {
-  double dark_ascension_value;
-
   dark_ascension_t( priest_t& p, util::string_view options_str )
-    : priest_spell_t( "dark_ascension", p, p.talents.shadow.dark_ascension ),
-      dark_ascension_value( priest().buffs.dark_ascension->default_value )
+    : priest_spell_t( "dark_ascension", p, p.talents.shadow.dark_ascension )
   {
     parse_options( options_str );
 
@@ -2142,13 +2123,13 @@ struct ancient_madness_t final : public priest_buff_t<buff_t>
     // https://github.com/SimCMinMax/WoW-BugTracker/issues/1030
     if ( priest().bugs && priest().talents.shadow.void_eruption.enabled() )
     {
-      set_default_value( 0.02 ); // 2%
-      set_max_stack( as<int>( data().effectN( 3 ).base_value() )  ); // 5/10;
+      set_default_value( 0.02 );                                     // 2%
+      set_max_stack( as<int>( data().effectN( 3 ).base_value() ) );  // 5/10;
     }
     else
     {
-      set_default_value( data().effectN( 2 ).percent() ); // 0.5%/1%
-      set_max_stack( 20 ); // 20/20;
+      set_default_value( data().effectN( 2 ).percent() );  // 0.5%/1%
+      set_max_stack( 20 );                                 // 20/20;
     }
   }
 };
@@ -2288,6 +2269,7 @@ void priest_t::create_buffs_shadow()
   // TODO: use default_value to parse increase instead of stacks
   buffs.dark_ascension = make_buff( this, "dark_ascension", talents.shadow.dark_ascension )
                              ->set_default_value_from_effect( 1 )
+                             ->set_cooldown( 0_s )
                              ->add_invalidate( CACHE_PLAYER_DAMAGE_MULTIPLIER );
 
   // Conduits (Shadowlands)
@@ -2634,25 +2616,17 @@ bool priest_t::is_screams_of_the_void_up( player_t* target ) const
 {
   priest_td_t* td = get_target_data( target );
 
-  // BUG: https://github.com/SimCMinMax/WoW-BugTracker/issues/998
-  if ( bugs )
+  if ( talents.shadow.screams_of_the_void.enabled() )
   {
-    return td->buffs.screams_of_the_void->up();
-  }
-  else
-  {
-    if ( talents.shadow.screams_of_the_void.enabled() )
+    if ( td->dots.mind_flay->is_ticking() || td->dots.void_torrent->is_ticking() ||
+         td->dots.mind_flay_insanity->is_ticking() ||
+         ( talents.shadow.mind_sear.enabled() && channeling != nullptr &&
+           channeling->id == talents.shadow.mind_sear->id() ) )
     {
-      if ( td->dots.mind_flay->is_ticking() || td->dots.void_torrent->is_ticking() ||
-           td->dots.mind_flay_insanity->is_ticking() ||
-           ( talents.shadow.mind_sear.enabled() && channeling != nullptr &&
-             channeling->id == talents.shadow.mind_sear->id() ) )
-      {
-        return true;
-      }
+      return true;
     }
-    return false;
   }
+  return false;
 }
 
 // Helper function to refresh talbadars buff
@@ -2697,9 +2671,9 @@ void priest_t::trigger_idol_of_nzoth( player_t* target, proc_t* proc )
   {
     proc->occur();
     td->buffs.echoing_void->trigger();
-    if ( !td->buffs.echoing_void_collapse->check() && rng().roll( talents.shadow.idol_of_nzoth->proc_chance() ) )
+    if ( rng().roll( talents.shadow.idol_of_nzoth->proc_chance() ) )
     {
-      td->buffs.echoing_void_collapse->trigger();
+      td->buffs.echoing_void_collapse->trigger( timespan_t::from_seconds( td->buffs.echoing_void->stack() + 1 ) );
     }
   }
 }
